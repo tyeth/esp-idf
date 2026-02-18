@@ -1,5 +1,5 @@
-idf_component_register(SRC_DIRS "." "usb_device" "uac"
-                       INCLUDE_DIRS "." "include" "uac" "usb_device")
+idf_component_register(SRC_DIRS "." "usb_device" "uac" "ot_bridge"
+                       INCLUDE_DIRS "." "include" "uac" "usb_device" "ot_bridge")
 
 idf_component_get_property(tusb_lib leeebo__tinyusb_src COMPONENT_LIB)
 

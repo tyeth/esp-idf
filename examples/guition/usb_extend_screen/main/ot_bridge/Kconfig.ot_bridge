@@ -1,0 +1,52 @@
+menu "OpenThread UART Bridge (C6 Coprocessor)"
+
+    config OT_BRIDGE_ENABLE
+        bool "Enable OpenThread UART-to-USB CDC bridge"
+        default y
+        help
+            Enable a USB CDC ACM serial port that bridges to an ESP32-C6
+            coprocessor running OpenThread RCP firmware over UART.
+
+    if OT_BRIDGE_ENABLE
+
+        config OT_BRIDGE_UART_PORT_NUM
+            int "UART port number for C6 coprocessor"
+            default 1
+            range 0 2
+            help
+                UART peripheral number on the ESP32-P4 connected to the C6.
+
+        config OT_BRIDGE_UART_BAUD_RATE
+            int "UART baud rate"
+            default 460800
+            help
+                Baud rate for communication with the C6 OpenThread RCP.
+                The C6 RCP firmware must use the same baud rate.
+
+        config OT_BRIDGE_UART_TX_PIN
+            int "UART TX GPIO pin (P4 -> C6 RX)"
+            default 24
+
+        config OT_BRIDGE_UART_RX_PIN
+            int "UART RX GPIO pin (P4 <- C6 TX)"
+            default 25
+
+        config OT_BRIDGE_UART_RX_BUF_SIZE
+            int "UART RX ring buffer size (bytes)"
+            default 2048
+
+        config OT_BRIDGE_UART_TX_BUF_SIZE
+            int "UART TX ring buffer size (bytes)"
+            default 2048
+
+        config OT_BRIDGE_TASK_PRIORITY
+            int "Bridge task priority"
+            default 5
+            range 1 15
+
+        config OT_BRIDGE_TASK_STACK_SIZE
+            int "Bridge task stack size (bytes)"
+            default 4096
+
+    endif # OT_BRIDGE_ENABLE
+endmenu

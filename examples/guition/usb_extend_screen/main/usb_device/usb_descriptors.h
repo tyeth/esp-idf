@@ -44,6 +44,10 @@ enum {
 #if CFG_TUD_HID
     ITF_NUM_HID,
 #endif
+#if CFG_TUD_CDC
+    ITF_NUM_CDC,       /* CDC Control interface */
+    ITF_NUM_CDC_DATA,  /* CDC Data interface */
+#endif
 #if CFG_TUD_AUDIO
     ITF_NUM_AUDIO_CONTROL,
     ITF_NUM_AUDIO_STREAMING_SPK,
@@ -58,12 +62,37 @@ enum {
 #if CFG_TUD_HID
     EPNUM_HID_DATA,
 #endif
+#if CFG_TUD_CDC
+    EPNUM_CDC_NOTIF,
+    EPNUM_CDC_DATA,
+#endif
 #if CFG_TUD_AUDIO
     EPNUM_AUDIO_OUT,
     EPNUM_AUDIO_IN,
     EPNUM_AUDIO_FB,
 #endif
     EPNUM_TOTAL
+};
+
+/* String descriptor indices — must match string_desc_arr[] ordering */
+enum {
+    STRIDX_LANGID        = 0,
+    STRIDX_MANUFACTURER  = 1,
+    STRIDX_PRODUCT       = 2,
+    STRIDX_SERIAL        = 3,
+    STRIDX_VENDOR        = 4,
+#if CFG_TUD_HID
+    STRIDX_HID,
+#endif
+#if CFG_TUD_CDC
+    STRIDX_CDC,
+#endif
+#if CFG_TUD_AUDIO
+    STRIDX_AUDIO,
+    STRIDX_SPEAKER,
+    STRIDX_MIC,
+#endif
+    STRIDX_TOTAL
 };
 
 #define TUD_HID_REPORT_DESC_TOUCH_SCREEN(report_id, width, height) \

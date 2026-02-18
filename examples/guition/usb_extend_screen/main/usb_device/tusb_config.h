@@ -28,6 +28,7 @@
 #include "sdkconfig.h"
 #include "uac_descriptors.h"
 #include "tusb_config_uac.h"
+#include "tusb_config_cdc.h"
 
 #ifdef __cplusplus
 extern "C" {

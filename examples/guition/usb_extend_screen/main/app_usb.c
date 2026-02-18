@@ -16,6 +16,9 @@
 #include "usb_descriptors.h"
 #include "device/usbd.h"
 #include "app_usb.h"
+#if defined(CONFIG_OT_BRIDGE_ENABLE) && CONFIG_OT_BRIDGE_ENABLE
+#include "app_ot_bridge.h"
+#endif
 
 static const char *TAG = "app_usb";
 
@@ -65,6 +68,11 @@ esp_err_t app_usb_init(void)
 #if CFG_TUD_AUDIO
     ret =  app_uac_init();
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ESP_FAIL, TAG, "app_uac_init failed");
+#endif
+
+#if defined(CONFIG_OT_BRIDGE_ENABLE) && CONFIG_OT_BRIDGE_ENABLE
+    ret = app_ot_bridge_init();
+    ESP_RETURN_ON_FALSE(ret == ESP_OK, ESP_FAIL, TAG, "app_ot_bridge_init failed");
 #endif
 
     xTaskCreate(tusb_device_task, "tusb_device_task", 4096, NULL, CONFIG_USB_TASK_PRIORITY, NULL);

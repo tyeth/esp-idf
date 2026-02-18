@@ -55,6 +55,9 @@ menu "Example Configuration"
     # Insert UAC config
     orsource "./uac/Kconfig.uac"
 
+    # Insert OpenThread UART bridge config
+    orsource "./ot_bridge/Kconfig.ot_bridge"
+
     config EXAMPLE_ENABLE_PRINT_FPS_RATE_VALUE
         bool "enable print fps rate value"
         default y

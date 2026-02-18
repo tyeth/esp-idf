@@ -94,6 +94,7 @@ uint8_t const * tud_hid_descriptor_report_cb(uint8_t instance)
 
 #define CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN * CFG_TUD_HID + \
                              TUD_VENDOR_DESC_LEN * CFG_TUD_VENDOR + \
+                             TUD_CDC_DESC_LEN * CFG_TUD_CDC + \
                              TUD_AUDIO_DEVICE_DESC_LEN * CFG_TUD_AUDIO)
 
 uint8_t const desc_fs_configuration[] = {
@@ -101,14 +102,18 @@ uint8_t const desc_fs_configuration[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0, 100),
     // Interface number, string index, EP Out & IN address, EP size
 #if CFG_TUD_VENDOR
-    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 4, EPNUM_VENDOR, 0x80 | EPNUM_VENDOR, CFG_TUD_VENDOR_EPSIZE),
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, STRIDX_VENDOR, EPNUM_VENDOR, 0x80 | EPNUM_VENDOR, CFG_TUD_VENDOR_EPSIZE),
 #endif
 #if CFG_TUD_HID
     // Interface number, string index, protocol, report descriptor len, EP In address, size & polling interval
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, 5, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), (0x80 | EPNUM_HID_DATA), CFG_TUD_HID_EP_BUFSIZE, 10),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID, STRIDX_HID, HID_ITF_PROTOCOL_NONE, sizeof(desc_hid_report), (0x80 | EPNUM_HID_DATA), CFG_TUD_HID_EP_BUFSIZE, 10),
+#endif
+#if CFG_TUD_CDC
+    // CDC ACM: notification EP, data OUT/IN
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, STRIDX_CDC, (0x80 | EPNUM_CDC_NOTIF), 8, EPNUM_CDC_DATA, (0x80 | EPNUM_CDC_DATA), CFG_TUD_VENDOR_EPSIZE),
 #endif
 #if CFG_TUD_AUDIO
-    TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, 6, EPNUM_AUDIO_OUT, (0x80 | EPNUM_AUDIO_IN), (0x80 | EPNUM_AUDIO_FB)),
+    TUD_AUDIO_DESCRIPTOR(ITF_NUM_AUDIO_CONTROL, STRIDX_AUDIO, EPNUM_AUDIO_OUT, (0x80 | EPNUM_AUDIO_IN), (0x80 | EPNUM_AUDIO_FB)),
 #endif
 };
 
@@ -135,10 +140,13 @@ char const *string_desc_arr [] = {
 #if CFG_TUD_HID
     "touch",                          // 5: HID Interface
 #endif
+#if CFG_TUD_CDC
+    "OpenThread CDC",                 // STRIDX_CDC: CDC ACM Interface
+#endif
 #if CFG_TUD_AUDIO
-    "esp uac",                        // 6: UAC Interface
-    "speaker",                        // 7: UAC Interface
-    "mic",                            // 8: UAC Interface
+    "esp uac",                        // UAC Interface
+    "speaker",                        // UAC Interface
+    "mic",                            // UAC Interface
 #endif
 };
 
