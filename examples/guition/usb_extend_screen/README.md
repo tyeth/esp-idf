@@ -20,6 +20,9 @@ The USB Extension Screen Example allows the P4 development board to be used as a
 
 ## Compilation and Flashing
 
+This is currently based off of tag release/v5.5
+Commit ref: 87912cd291d68f4319f13695718af6754879a83f
+
 ### P4 Device Side
 
 Build the project and flash it to the board, then run the monitor tool to view serial output:

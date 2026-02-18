@@ -22,6 +22,7 @@ cable that drives the display.
 
 ### Architecture
 
+**Current state (UART bridge — works for boards with UART wired):**
 ```
 ┌──────────────┐  USB   ┌──────────────┐  UART  ┌──────────────┐
 │  PC / Pi /   │◄─────►│  ESP32-P4    │◄─────►│  ESP32-C6    │
@@ -29,6 +30,16 @@ cable that drives the display.
 │  ot-daemon   │  ACM   │  bridge task │        │              │
 └──────────────┘        └──────────────┘        └──────────────┘
 ```
+
+**Target state (SDIO tunnel — for Guition JC1060P470 and similar boards):**
+```
+┌──────────────┐  USB   ┌──────────────┐  SDIO   ┌──────────────┐
+│  PC / Pi /   │◄─────►│  ESP32-P4    │◄──────►│  ESP32-C6    │
+│  Ubuntu host │  CDC   │  CDC↔ETH_IF  │ ETH_IF  │  OT 802.15.4 │
+│  ot-daemon   │  ACM   │  bridge task │ SER_IF  │  + OTA only   │
+└──────────────┘        └──────────────┘         └──────────────┘
+```
+See "Chosen Approach" section below for full implementation plan.
 
 ---
 
@@ -121,7 +132,7 @@ sudo ot-ctl
 
 | Option | Default |
 |---|---|
-| Enable | `n` (disabled) |
+| Enable | `y` (enabled) |
 | UART port | 1 |
 | Baud rate | 460800 |
 | TX GPIO (P4→C6) | 24 |
@@ -130,3 +141,268 @@ sudo ot-ctl
 | UART TX buffer | 2048 bytes |
 | Task priority | 5 |
 | Task stack | 4096 bytes |
+
+---
+
+## OpenThread over ESP-Hosted SDIO — Research & Options
+
+### Problem
+
+The Guition JC1060P470 board connects the ESP32-P4 to the ESP32-C6 **only via SDIO**
+(for esp-hosted WiFi/BT). There are **no UART pins routed** between the two chips.
+The CDC ACM bridge code above works correctly for the USB side, but there is no
+physical UART path to carry Spinel (OpenThread RCP) data to/from the C6.
+
+### Board Wiring (P4 ↔ C6)
+
+| Signal | P4 GPIO | C6 GPIO | Notes |
+|--------|---------|---------|-------|
+| SDIO CMD | 19 | 18 | |
+| SDIO CLK | 18 | 19 | |
+| SDIO D0 | 14 | 20 | FIB variant |
+| SDIO D1 | 15 | 21 | FIB variant |
+| SDIO D2 | 16 | 22 | |
+| SDIO D3 | 17 | 23 | |
+| EN (reset) | 23 | — | P4 can reset C6 |
+| WKUP | 6 | — | Wake signal |
+
+**No UART TX/RX, no SPI, no other data lines.**
+
+### ESP-Hosted Protocol Channels
+
+The SDIO link multiplexes these interface types:
+
+| `if_type` | Purpose | Status |
+|-----------|---------|--------|
+| `ESP_STA_IF` | WiFi Station | Active |
+| `ESP_AP_IF` | WiFi SoftAP | Active |
+| `ESP_SERIAL_IF` | Protobuf RPC | Active (also carries OTA) |
+| `ESP_HCI_IF` | Bluetooth HCI | Active |
+| `ESP_PRIV_IF` | Init/capability negotiation | Active |
+| `ESP_TEST_IF` | Raw throughput debug | Debug only |
+| `ESP_ETH_IF` | Ethernet | **Defined but unused** |
+
+### ESP-Hosted OTA Support
+
+The slave firmware supports OTA via protobuf RPC over SDIO:
+- Commands: `Req_OTABegin` (272), `Req_OTAWrite` (273), `Req_OTAEnd` (274)
+- Partition table has `ota_0` + `ota_1` slots (2× 1536K each)
+- The C6 can be reflashed without physical access
+
+### OpenThread RCP Transports (ESP-IDF)
+
+| Mode | Supported | Notes |
+|------|-----------|-------|
+| UART | Yes | Default, 460800 baud |
+| SPI | Yes | SPI slave mode |
+| USB Serial JTAG | Yes | Native USB on C6 |
+| **SDIO** | **No** | Not implemented |
+
+### Chosen Approach: OT-only C6 slave with Spinel over `ESP_ETH_IF` + OTA retained
+
+**Decision:** Use `ESP_ETH_IF` (already defined, value 7, currently unused) as the
+transport channel for OpenThread Spinel frames over SDIO. The C6 runs OpenThread
+only (no WiFi) but keeps the esp-hosted SDIO transport layer and protobuf RPC alive
+so that OTA firmware updates still work. This means the C6 can be flashed back to
+standard esp-hosted WiFi/BT at any time via OTA over SDIO.
+
+#### Updated Architecture
+
+```
+┌──────────────┐  USB    ┌────────────────────┐  SDIO   ┌──────────────────┐
+│  PC / Pi /   │  CDC    │    ESP32-P4         │         │   ESP32-C6       │
+│  Ubuntu host │  ACM    │                     │         │                  │
+│              │◄──────►│ USB CDC ↔ SDIO      │◄──────►│ Spinel↔ETH_IF    │
+│  ot-daemon   │ Spinel  │ bridge (ETH_IF)     │ ETH_IF  │ OT 802.15.4     │
+│              │         │                     │         │ radio            │
+│  OTA tool    │  CDC    │ OTA cmds →          │ SER_IF  │ OTA handlers     │
+│  (optional)  │  or PC  │ ESP_SERIAL_IF       │◄──────►│ (esp_ota API)    │
+└──────────────┘         └────────────────────┘         └──────────────────┘
+```
+
+#### What Exists (completed in this session)
+
+| Component | Location | Status |
+|-----------|----------|--------|
+| USB CDC ACM in composite device | `main/usb_device/` (tusb_config, descriptors) | **Done** |
+| CDC ↔ UART bridge task | `main/ot_bridge/app_ot_bridge.c` | **Done** (needs refactor — see below) |
+| Kconfig for OT bridge | `main/ot_bridge/Kconfig.ot_bridge` | **Done** |
+| Build system integration | `main/CMakeLists.txt`, `Kconfig.projbuild` | **Done** |
+| Firmware builds and flashes | `idf.py build && flash` | **Verified** |
+
+#### What Needs Building (future sessions)
+
+##### Phase 1: C6 Slave Firmware — OpenThread + esp-hosted transport
+
+**Location:** Create a new project, e.g. `examples/guition/slave_ot/` (fork of `slave/`)
+
+**Key files to modify in the slave:**
+
+1. **`main/app_main.c`** — `process_rx_pkt()`
+   - Add `case ESP_ETH_IF:` handler that feeds received data into the OpenThread
+     Spinel HDLC decoder
+   - Current code ignores `ESP_ETH_IF` packets
+
+2. **`main/slave_control.c`** — Keep ALL existing OTA handlers intact:
+   - `req_ota_begin_handler()` (cmd 272)
+   - `req_ota_write_handler()` (cmd 273)
+   - `req_ota_end_handler()` (cmd 274)
+   - These use `esp_ota_begin/write/end` and work over `ESP_SERIAL_IF`
+
+3. **New file `main/ot_radio.c`** — OpenThread radio integration:
+   - Init ESP-IDF OpenThread radio driver (`esp_openthread_radio_init()`)
+   - Register Spinel frame TX callback that wraps frames in esp-hosted packet
+     with `if_type = ESP_ETH_IF` and sends via `send_to_host()` 
+   - Register Spinel frame RX handler called from `process_rx_pkt()` ETH_IF case
+   - The C6 has a dedicated IEEE 802.15.4 radio — no conflict with keeping
+     the SDIO slave transport running
+
+4. **`sdkconfig.defaults.esp32c6`** — Add:
+   ```
+   CONFIG_OPENTHREAD_ENABLED=y
+   CONFIG_OPENTHREAD_RADIO_NATIVE=y
+   # Disable WiFi to save memory, OT-only mode
+   CONFIG_ESP_WIFI_ENABLED=n
+   CONFIG_BT_ENABLED=n
+   ```
+
+5. **Partition table** — Keep `ota_0`/`ota_1` partitions so OTA still works.
+   The OT-only firmware will be smaller than WiFi+BT, so it fits easily.
+
+6. **`adapter.h`** — No changes needed. `ESP_ETH_IF = 7` already exists.
+
+##### Phase 2: P4 Host Side — SDIO ↔ USB CDC Bridge
+
+**Location:** Modify `main/ot_bridge/` in the `usb_extend_screen` project
+
+**Key changes:**
+
+1. **Refactor `app_ot_bridge.c`** — Replace UART transport with SDIO/esp-hosted:
+   - Instead of `uart_read_bytes()` / `uart_write_bytes()`, use the esp-hosted
+     host driver API to send/receive `ESP_ETH_IF` frames
+   - The bridge task becomes: USB CDC ↔ esp-hosted ETH_IF (not UART)
+   - Keep the UART option behind a Kconfig toggle for boards that DO have
+     UART wired (bodge wire scenario)
+
+2. **Add esp-hosted host dependency** to `idf_component.yml`:
+   ```yaml
+   espressif/esp_hosted:
+     version: ">=0.0.27"
+   ```
+
+3. **`Kconfig.ot_bridge`** — Add transport selection:
+   ```
+   choice OT_BRIDGE_TRANSPORT
+       prompt "OpenThread bridge transport to C6"
+       default OT_BRIDGE_TRANSPORT_SDIO
+       
+       config OT_BRIDGE_TRANSPORT_SDIO
+           bool "SDIO (via esp-hosted ETH_IF channel)"
+       config OT_BRIDGE_TRANSPORT_UART
+           bool "UART (direct wired)"
+   endchoice
+   ```
+
+4. **SDIO transport functions** (new file `main/ot_bridge/ot_sdio_transport.c`):
+   - `ot_sdio_send(buf, len)` — Wrap in esp-hosted frame, `if_type=ESP_ETH_IF`, send
+   - Register RX callback for `ESP_ETH_IF` frames from esp-hosted host driver
+   - Feed received Spinel into `tud_cdc_n_write()`
+
+##### Phase 3: OTA Tool (Optional)
+
+Create a simple host-side utility (Python or C) that sends OTA commands over the
+esp-hosted RPC channel to flash the C6 back to normal esp-hosted WiFi/BT or update
+the OT firmware. This can run over:
+- The USB CDC port (if we expose `ESP_SERIAL_IF` as a second CDC endpoint), or
+- A dedicated OTA script that talks directly to the esp-hosted host driver on the P4
+
+**Alternative:** The P4 firmware itself could embed the OTA binary and flash the C6
+on first boot or via a command.
+
+#### File Map (for future sessions)
+
+```
+examples/guition/
+├── usb_extend_screen/          ← P4 firmware (THIS project)
+│   ├── main/
+│   │   ├── ot_bridge/
+│   │   │   ├── Kconfig.ot_bridge        ✅ Done (add transport choice)
+│   │   │   ├── tusb_config_cdc.h        ✅ Done
+│   │   │   ├── app_ot_bridge.h          ✅ Done
+│   │   │   ├── app_ot_bridge.c          ✅ Done (refactor UART→SDIO)
+│   │   │   ├── ot_sdio_transport.c      ❌ TODO — SDIO send/recv via ETH_IF
+│   │   │   └── ot_sdio_transport.h      ❌ TODO
+│   │   ├── usb_device/
+│   │   │   ├── tusb_config.h            ✅ Done (includes CDC config)
+│   │   │   ├── usb_descriptors.h        ✅ Done (CDC interfaces + endpoints)
+│   │   │   └── usb_descriptors.c        ✅ Done (CDC descriptor in composite)
+│   │   ├── app_usb.c                    ✅ Done (calls app_ot_bridge_init)
+│   │   ├── CMakeLists.txt               ✅ Done (includes ot_bridge dir)
+│   │   └── Kconfig.projbuild            ✅ Done (sources ot_bridge Kconfig)
+│   └── changelog_20260218.md            ✅ This file
+│
+├── slave/                      ← Original esp-hosted C6 slave (WiFi/BT)
+│   └── (untouched — keep as reference / OTA restore target)
+│
+└── slave_ot/                   ❌ TODO — Fork of slave/ for OT mode
+    ├── main/
+    │   ├── app_main.c                   ❌ TODO — Add ESP_ETH_IF → Spinel
+    │   ├── slave_control.c              (keep OTA handlers as-is)
+    │   ├── ot_radio.c                   ❌ TODO — OT radio + Spinel framing
+    │   └── ot_radio.h                   ❌ TODO
+    ├── sdkconfig.defaults.esp32c6       ❌ TODO — OT enabled, WiFi disabled
+    └── partitions.esp32c6.csv           (keep OTA partitions)
+```
+
+#### Key Technical Details for Implementation
+
+**esp-hosted packet format** (for `ESP_ETH_IF` frames):
+```c
+struct esp_payload_header {
+    uint8_t  if_type;       // ESP_ETH_IF = 7
+    uint8_t  if_num;        // 0
+    uint8_t  flags;
+    uint8_t  packet_type;   // DATA_PACKET = 2
+    uint16_t len;           // Spinel frame length
+    uint16_t offset;        // Payload offset
+    uint16_t checksum;      // Optional
+    uint16_t seq_num;
+    uint8_t  throttle_cmd;
+    // ... followed by raw Spinel HDLC frame
+};
+```
+
+**Spinel over HDLC:** OpenThread RCP uses Spinel protocol encoded with HDLC-lite
+framing (flag bytes `0x7E`, byte-stuffing). The raw HDLC stream is what flows
+through the `ESP_ETH_IF` channel — no additional framing needed.
+
+**C6 SDIO slave pins (fixed, cannot change):**
+CLK=19, CMD=18, D0=20, D1=21, D2=22, D3=23
+
+**C6 free GPIOs (available for 802.15.4 radio — auto-assigned internally):**
+0–17 are free. The 802.15.4 radio is internal to the C6, no external pins needed.
+
+**OTA partition layout on C6:**
+```
+otadata,  data, ota,     0xd000,   0x2000,
+ota_0,    app,  ota_0,   0x10000,  0x180000,   (1536KB)
+ota_1,    app,  ota_1,   0x190000, 0x180000,   (1536KB)
+```
+
+#### Dependencies
+
+- ESP-IDF v5.5+ (current: v5.5.2)
+- esp-hosted v0.0.27+ (current slave firmware version)
+- TinyUSB (via `leeebo/tinyusb_src` managed component)
+- ESP-IDF OpenThread component (`components/openthread/`)
+
+#### Testing Plan
+
+1. Build and flash `slave_ot` to C6 (via CH340 serial first time, then OTA)
+2. Build and flash `usb_extend_screen` to P4 (with SDIO transport enabled)
+3. Plug USB into Pi/Ubuntu host
+4. Verify `/dev/ttyACM0` appears
+5. Run: `sudo ot-daemon -I wpan0 'spinel+hdlc+forkpty:///dev/ttyACM0'`
+6. Run: `sudo ot-ctl state` → should show "disabled" (OT radio ready)
+7. Test OTA: flash original `slave/` WiFi firmware back via OTA over SDIO
+8. Verify C6 returns to normal esp-hosted WiFi mode after OTA + reboot
