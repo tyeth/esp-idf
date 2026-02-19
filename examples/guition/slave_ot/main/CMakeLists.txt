@@ -3,7 +3,7 @@ idf_component_register(
         "app_main.c"
         "ot_spinel_sdio.c"
     INCLUDE_DIRS "."
-    PRIV_REQUIRES openthread ieee802154 nvs_flash esp_event esp_hosted_slave
+    PRIV_REQUIRES openthread ieee802154 nvs_flash esp_event esp_hosted_slave app_update
 )
 
 # Wrap otPlatUart* functions so we can redirect Spinel I/O to SDIO ETH_IF

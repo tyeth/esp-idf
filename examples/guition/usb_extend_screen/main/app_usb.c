@@ -97,9 +97,26 @@ esp_err_t app_usb_init(void)
 #endif
     );
     if (ota_ret == ESP_HOSTED_SLAVE_OTA_COMPLETED) {
-        ESP_LOGI(TAG, "Slave OTA succeeded — activating and restarting …");
-        esp_hosted_slave_ota_activate();
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        ESP_LOGI(TAG, "Slave OTA succeeded — activating new firmware …");
+        esp_err_t act_ret = esp_hosted_slave_ota_activate();
+        if (act_ret == ESP_OK) {
+            ESP_LOGI(TAG, "Activate OK — slave will reboot. Waiting 10 s to check status...");
+            vTaskDelay(pdMS_TO_TICKS(10000));
+            
+            esp_hosted_coprocessor_fwver_t ver = {0};
+            if (esp_hosted_get_coprocessor_fwversion(&ver) == ESP_OK) {
+                ESP_LOGI(TAG, "DIAG: Slave is ALIVE. Version: %" PRIu32 ".%" PRIu32 ".%" PRIu32, 
+                         ver.major1, ver.minor1, ver.patch1);
+            } else {
+                ESP_LOGE(TAG, "DIAG: Slave NOT responding (likely crashing/bootlooping)");
+            }
+            ESP_LOGI(TAG, "Waiting another 50s before P4 restart...");
+            vTaskDelay(pdMS_TO_TICKS(50000));
+        } else {
+            ESP_LOGE(TAG, "Activate FAILED: %s (0x%x)",
+                     esp_err_to_name(act_ret), (int)act_ret);
+            vTaskDelay(pdMS_TO_TICKS(60000));
+        }
         esp_restart();
     } else if (ota_ret == ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {
         ESP_LOGI(TAG, "Slave firmware is up to date");

@@ -21,6 +21,7 @@
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_event.h"
+#include "esp_ota_ops.h"
 #include "esp_openthread.h"
 #include "esp_openthread_types.h"
 #include "esp_vfs_eventfd.h"
@@ -57,6 +58,14 @@ static const esp_openthread_config_t s_ot_config = {
 
 void app_main(void)
 {
+    /*
+     * Cancel any pending OTA rollback FIRST, before anything that might crash.
+     * If we were booted via OTA and the bootloader has rollback tracking
+     * enabled, this marks our image as valid so the bootloader won't
+     * revert to the previous firmware on the next reset.
+     */
+    esp_ota_mark_app_valid_cancel_rollback();
+
     ESP_LOGI(TAG, "=== slave_ot: ESP-Hosted + OpenThread RCP ===");
 
     /* Initialize NVS — needed by both esp-hosted and OpenThread */
