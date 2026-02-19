@@ -61,3 +61,65 @@ For preparation, refer to the [windows_driver](./windows_driver/README.md)
 - Update the `usb_descriptor.c` file by changing the `string_desc_arr` vendor interface string. Modify `R1024x600` to the desired screen resolution.
 
 **Note**: Currently, the driver does not support portrait mode screens. Please use hardware that is designed for landscape orientation.
+
+---
+
+## OpenThread RCP Bridge (Guition JC1060P470)
+
+On boards with an on-board ESP32-C6 connected via SDIO (e.g. the Guition
+JC1060P470), this firmware additionally provides:
+
+- A **USB CDC ACM serial port** that bridges OpenThread Spinel frames to the C6
+  over the SDIO `ESP_ETH_IF` channel.
+- **Automatic OTA** of the C6 coprocessor firmware on first boot.
+
+### How the OTA works
+
+The P4 flash image includes a **LittleFS partition** (`storage`, 2 MB at
+`0x610000`) containing `slave_ot.bin` — a custom esp-hosted coprocessor firmware
+that adds OpenThread 802.15.4 RCP support.
+
+On every boot the P4:
+
+1. Connects to the C6 via esp-hosted SDIO.
+2. Reads the C6's firmware version.
+3. If the C6 reports version **1.250.x** → it is already running our OT RCP
+   firmware → skip OTA, start the bridge immediately.
+4. If the C6 reports **any other version** (e.g. stock `2.11.7`, blank flash,
+   etc.) → OTA-update the C6 with the embedded `slave_ot.bin`, activate, and
+   restart.
+
+### Firmware version strategy: `1.250.0`
+
+The slave_ot firmware deliberately uses version **1.250.0**:
+
+| Property | Value | Reason |
+|---|---|---|
+| Major | **1** | Below mainline esp-hosted (≥ 2.x) |
+| Minor | **250** | Recognisable as our custom OT RCP build |
+
+**This means:** if you later flash a *different* P4 application that uses stock
+esp-hosted (e.g. a normal Wi-Fi app), it will see `1.250.0` as outdated and
+automatically OTA the C6 back to the latest mainline esp-hosted Wi-Fi coprocessor
+firmware — with current TLS certificates, security patches, etc. The board is
+always recoverable to normal Wi-Fi operation simply by reflashing the P4.
+
+### Building with OT bridge support
+
+The OT bridge is controlled by Kconfig options (under `Component config →
+OT Bridge Configuration`):
+
+- `CONFIG_OT_BRIDGE_ENABLE` — master enable
+- `CONFIG_OT_BRIDGE_TRANSPORT_SDIO` — use SDIO ETH_IF (default for Guition
+  boards)
+- `CONFIG_OT_SLAVE_OTA_ON_BOOT` — enable automatic C6 OTA check at boot
+
+```bash
+idf.py set-target esp32p4
+idf.py build
+idf.py -p /dev/ttyACM0 flash monitor
+```
+
+The flash command writes 4 partitions: bootloader, partition table, app, and the
+LittleFS storage image. No separate C6 flashing step is required — the P4 handles
+it via OTA on first boot.

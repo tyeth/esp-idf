@@ -406,3 +406,277 @@ ota_1,    app,  ota_1,   0x190000, 0x180000,   (1536KB)
 6. Run: `sudo ot-ctl state` → should show "disabled" (OT radio ready)
 7. Test OTA: flash original `slave/` WiFi firmware back via OTA over SDIO
 8. Verify C6 returns to normal esp-hosted WiFi mode after OTA + reboot
+
+---
+
+## Phase 1 Implementation — COMPLETED (2026-02-19)
+
+### Summary
+
+Built the C6 slave_ot firmware that runs OpenThread RCP inside the esp-hosted
+SDIO coprocessor, tunnelling Spinel HDLC frames over `ESP_ETH_IF` (channel 7).
+Binary builds successfully at ~1.1MB, well within the 1536K OTA partition.
+
+### Approach: Wrapper Component + `--wrap` Linker
+
+**Key design decisions:**
+
+1. **esp-hosted-mcu as a component wrapper** — The upstream `esp-hosted-mcu/slave/main/`
+   uses old-style `register_component()` which registers as "main", colliding with our
+   project's main. Solved by creating `components/esp_hosted_slave/` as a wrapper
+   that includes the upstream sources under a different component name.
+
+2. **`ESP_ETH_IF` patched into esp-hosted** — Added ETH_IF handling to
+   `process_rx_pkt()` and `esp_hosted_coprocessor_eth_tx()` in the upstream
+   repo (3 patches to coprocessor.c, 1 to coprocessor.h). Uses weak function
+   pattern so the default drops ETH_IF packets; slave_ot overrides with a
+   strong symbol.
+
+3. **`--wrap` linker flags for otPlatUart*** — OpenThread's NCP HDLC layer sends
+   via `otPlatUartSend()` and receives via `otPlatUartReceived()`. We intercept
+   `otPlatUartSend` with `__wrap_otPlatUartSend` that routes to SDIO ETH_IF.
+   For RX, the strong `esp_hosted_coprocessor_eth_rx()` calls `otPlatUartReceived()`.
+
+4. **CONFIG_OPENTHREAD_RCP_UART=y with HOST_CONNECTION_MODE_NONE** — The OT
+   config Kconfig has no "none" transport option. We select RCP_UART to get the
+   NCP HDLC code compiled, but use HOST_CONNECTION_MODE_NONE in the OT platform
+   config so no actual UART hardware is initialized.
+
+### Files Created
+
+| File | Description |
+|------|-------------|
+| `slave_ot/CMakeLists.txt` | Top-level project, includes esp_hosted_slave component |
+| `slave_ot/main/CMakeLists.txt` | Main component with `--wrap` linker flags |
+| `slave_ot/main/app_main.c` | Custom app_main: NVS + esp-hosted init + OT start |
+| `slave_ot/main/ot_spinel_sdio.c` | Spinel ↔ SDIO bridge (wrap + override) |
+| `slave_ot/main/ot_spinel_sdio.h` | Header for bridge module |
+| `slave_ot/main/idf_component.yml` | Component manager manifest |
+| `slave_ot/sdkconfig.defaults` | Base config (4MB flash, SDIO, custom partition) |
+| `slave_ot/sdkconfig.defaults.esp32c6` | C6-specific (OT enabled, native radio) |
+| `slave_ot/partitions.csv` | OTA-capable partition table |
+| `slave_ot/components/esp_hosted_slave/CMakeLists.txt` | Component wrapper for esp-hosted sources |
+| `slave_ot/components/esp_hosted_slave/Kconfig.projbuild` | Symlink → esp-hosted-mcu Kconfig |
+| `slave_ot/components/esp_hosted_slave/Kconfig.light_sleep` | Symlink → esp-hosted-mcu Kconfig |
+
+### Files Modified (in esp-hosted-mcu repo)
+
+| File | Changes |
+|------|---------|
+| `slave/main/esp_hosted_coprocessor.c` | Added weak `esp_hosted_coprocessor_eth_rx()`, `ESP_ETH_IF` case in `process_rx_pkt()`, and `esp_hosted_coprocessor_eth_tx()` function |
+| `slave/main/esp_hosted_coprocessor.h` | Added declarations for `eth_rx` and `eth_tx` functions |
+
+### Build Output
+
+```
+Target: esp32c6
+Flash size: 4MB
+Binary size: ~1.1MB (fits in 1536K OTA partition)
+DIRAM usage: 43.47% (196512 / 452112 bytes)
+Components: esp_hosted_slave + openthread + ieee802154 + esp_wifi + ...
+```
+
+### Updated File Map
+
+```
+examples/guition/
+├── usb_extend_screen/          ← P4 firmware
+│   ├── main/ot_bridge/         ✅ CDC ACM bridge (needs Phase 2 SDIO transport)
+│   └── changelog_20260218.md   ✅ This file
+│
+├── slave/                      ← Original esp-hosted C6 slave (WiFi/BT, untouched)
+│
+└── slave_ot/                   ✅ Phase 1 COMPLETE — OT RCP over SDIO
+    ├── CMakeLists.txt          ✅
+    ├── sdkconfig.defaults      ✅
+    ├── sdkconfig.defaults.esp32c6  ✅
+    ├── partitions.csv          ✅
+    ├── main/
+    │   ├── CMakeLists.txt      ✅
+    │   ├── app_main.c          ✅
+    │   ├── ot_spinel_sdio.c    ✅
+    │   ├── ot_spinel_sdio.h    ✅
+    │   └── idf_component.yml   ✅
+    └── components/
+        └── esp_hosted_slave/
+            ├── CMakeLists.txt      ✅ (wrapper for esp-hosted-mcu sources)
+            ├── Kconfig.projbuild   ✅ (symlink)
+            └── Kconfig.light_sleep ✅ (symlink)
+```
+
+### Next Steps
+
+- **Phase 1b:** Move modified esp-hosted-mcu into the repo, rebuild slave_ot
+- **Phase 2:** P4 host: esp-hosted + CDC bridge + LittleFS slave OTA
+- **Testing:** Flash slave_ot to C6 and verify SDIO link with P4
+
+---
+
+## Phase 1b + Phase 2 Plan — Integrate esp-hosted-mcu & P4 OTA (2026-02-19)
+
+### Goals
+
+1. Copy the modified esp-hosted-mcu into the guition repo as a shared component
+   so both `slave_ot` (C6) and `usb_extend_screen` (P4) can reference it
+2. Rebuild `slave_ot` using the local copy
+3. Add the esp-hosted HOST side to the P4 `usb_extend_screen` firmware:
+   - CDC ACM ↔ SDIO ETH_IF bridge (replaces the UART bridge)
+   - LittleFS partition containing the slave_ot binary for OTA
+   - On boot: esp-hosted init → slave OTA check → OT bridge starts
+
+### Architecture
+
+```
+┌──────────────┐  USB    ┌────────────────────────┐  SDIO   ┌──────────────────┐
+│  PC / Pi /   │  CDC    │    ESP32-P4 host        │         │   ESP32-C6       │
+│  Ubuntu host │  ACM    │   (usb_extend_screen)   │         │  (slave_ot)      │
+│              │◄──────►│                          │◄──────►│                  │
+│  ot-daemon   │ Spinel  │ USB CDC ↔ esp-hosted    │ ETH_IF  │ Spinel↔ETH_IF    │
+│              │         │ ETH_IF bridge task       │         │ OT 802.15.4      │
+│              │         │                          │         │                  │
+│              │         │ On boot:                 │ SER_IF  │ OTA handlers     │
+│              │         │  1. esp_hosted_init()    │◄──────►│ (protobuf RPC)   │
+│              │         │  2. slave OTA check      │         │                  │
+│              │         │     (LittleFS→OTA API)   │         │                  │
+│              │         │  3. start CDC bridge     │         │                  │
+└──────────────┘         └────────────────────────┘         └──────────────────┘
+```
+
+### Shared Component Layout
+
+```
+examples/guition/
+├── common_components/
+│   └── esp_hosted_mcu_ot/           ← Modified esp-hosted-mcu (stripped)
+│       ├── common/                   ← Proto, utils, transport, rpc
+│       ├── slave/main/              ← Slave sources (with ETH_IF patches)
+│       ├── host/                    ← Host driver + OTA APIs
+│       └── README.md                ← Notes on modifications
+│
+├── slave_ot/                        ← C6 firmware (uses slave/ side)
+│   └── components/esp_hosted_slave/ ← Points to common_components
+│
+└── usb_extend_screen/               ← P4 firmware (uses host/ side)
+    ├── components/
+    │   └── slave_ota_littlefs/      ← LittleFS OTA component
+    │       ├── CMakeLists.txt
+    │       ├── slave_ota_littlefs.c
+    │       ├── slave_ota_littlefs.h
+    │       └── slave_fw_bin/        ← Contains slave_ot.bin
+    └── main/
+        └── ot_bridge/
+            ├── app_ot_bridge.c      ← Refactored: SDIO transport via esp-hosted
+            ├── app_ot_bridge.h
+            ├── Kconfig.ot_bridge    ← Transport choice: SDIO vs UART
+            └── tusb_config_cdc.h
+```
+
+### P4 Firmware Changes (usb_extend_screen)
+
+1. **Add `espressif/esp_hosted` dependency** — idf_component.yml gets the managed
+   component which provides the host-side esp-hosted driver
+2. **Add `joltwallet/littlefs` dependency** — for LittleFS filesystem support
+3. **New `components/slave_ota_littlefs/`** — Adapted from
+   `esp-hosted-mcu/examples/host_performs_slave_ota/components/ota_littlefs/`
+   - Embeds `slave_ot.bin` into a LittleFS partition image at build time
+   - `slave_ota_perform()` function: mount → find .bin → version check → OTA
+4. **Refactor `app_ot_bridge.c`** — Add SDIO transport option alongside UART:
+   - Register for ESP_ETH_IF RX events from esp-hosted
+   - Bridge: CDC ↔ ETH_IF (instead of CDC ↔ UART)
+5. **Update `app_usb.c` boot sequence:**
+   - `esp_hosted_init()` + `esp_hosted_connect_to_slave()`
+   - OTA check via `slave_ota_perform()`
+   - Start OT bridge (SDIO mode)
+6. **Update partition table** — Add `storage` LittleFS partition (~2MB)
+7. **Update sdkconfig.defaults** — ESP-Hosted config, SDIO pins, etc.
+
+### ESP-Hosted Slave OTA APIs (from host side)
+
+```c
+esp_hosted_slave_ota_begin();                    // Init OTA on slave
+esp_hosted_slave_ota_write(data, size);          // Send 1500-byte chunks
+esp_hosted_slave_ota_end();                      // Validate on slave
+esp_hosted_slave_ota_activate();                 // Switch boot partition + reboot
+esp_hosted_get_coprocessor_fwversion(&ver);      // Check running version
+```
+
+### P4 Partition Table (16MB flash)
+
+```
+nvs,      data, nvs,      0x9000,    16K,
+otadata,  data, ota,      0xd000,    8K,
+phy_init, data, phy,      0xf000,    4K,
+factory,  app,  factory,  0x10000,   4M,
+storage,  data, littlefs, 0x410000,  2M,         ← slave_ot.bin in LittleFS
+```
+Note: P4 has 16MB flash. Using factory (no OTA for P4) + 2MB LittleFS for slave FW.
+
+---
+
+## Phase 2 Implementation — 2026-02-19
+
+### Component resolution fix
+
+The IDF component manager resolves `override_path` to an absolute directory and
+derives the cmake component name from the **directory basename**. When other
+components (e.g. `esp_wifi_remote`) pull in `espressif/esp_hosted` as a transitive
+dependency, cmake expects a component named `espressif__esp_hosted`.
+
+**Fix:** Renamed `common_components/esp_hosted_mcu_ot` →
+`common_components/espressif__esp_hosted` so the directory name matches the
+expected cmake component name. A convenience symlink `esp_hosted_mcu_ot` →
+`espressif__esp_hosted` is kept so `slave_ot`'s existing path references still
+resolve.
+
+### Custom firmware version: `1.250.0`
+
+The slave_ot firmware reports version **1.250.0** (set in both `PROJECT_VER` and
+the `PROJECT_VERSION_MAJOR_1` / `MINOR_1` / `PATCH_1` compile flags).
+
+| Version field | Source |
+|---|---|
+| `esp_app_desc_t.version` (in .bin header) | `PROJECT_VER "1.250.0"` in `slave_ot/CMakeLists.txt` |
+| RPC response (`esp_hosted_get_coprocessor_fwversion`) | `-DPROJECT_VERSION_MAJOR_1=1 -DPROJECT_VERSION_MINOR_1=250 -DPROJECT_VERSION_PATCH_1=0` compile flags |
+
+**Why 1.250.0?**
+
+- The `250` minor makes it instantly recognisable as our custom OT RCP build.
+- Major version `1` keeps it **below** mainline esp-hosted releases (currently
+  `2.11.7`). Any future app using stock esp-hosted will see this as outdated and
+  OTA the C6 back to a normal Wi-Fi coprocessor firmware with current TLS certs,
+  etc. This is intentional — the board should be recoverable to normal Wi-Fi
+  operation simply by flashing a different P4 app.
+
+### OTA version check logic
+
+On boot the P4 firmware:
+
+1. Initialises esp-hosted and connects to the C6 slave.
+2. Reads the slave's running firmware version via
+   `esp_hosted_get_coprocessor_fwversion()`.
+3. **If `major == 1 && minor == 250`** → slave is already running our OT RCP →
+   skip OTA.
+4. **Otherwise** (stock `2.11.7`, blank flash, any other version) → stream the
+   embedded `slave_ot.bin` from the LittleFS `storage` partition to the C6 via
+   the esp-hosted OTA API, activate, and restart.
+
+### Host-side ETH_IF API (new files)
+
+| File | Purpose |
+|---|---|
+| `host/api/src/esp_hosted_eth_if.c` | Register RX callback, TX via `esp_hosted_tx(ESP_ETH_IF, …)` |
+| `host/esp_hosted.h` | Added `esp_hosted_eth_if_rx_cb_t`, `esp_hosted_register_eth_if_rx_handler()`, `esp_hosted_eth_if_tx()` |
+| `host/drivers/transport/sdio/sdio_drv.c` | Added `ESP_ETH_IF` case in RX dispatch |
+
+### Build warnings fixed
+
+- `slave_ota_littlefs.c`: replaced `snprintf` / `strncpy` patterns that triggered
+  `-Werror=format-truncation` and `-Werror=stringop-truncation`.
+
+### Build results
+
+| Firmware | Binary size | Free |
+|---|---|---|
+| `slave_ot.bin` (C6) | 1,100,336 B (0x10ca30) | 30% |
+| `usb_touch_screen.bin` (P4) | ~843 KB (0xccf10) | 87% of 6 MB |
+| `storage.bin` (LittleFS) | 2 MB | slave_ot.bin embedded |

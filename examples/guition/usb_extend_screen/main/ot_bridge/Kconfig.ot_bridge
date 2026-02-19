@@ -1,43 +1,60 @@
-menu "OpenThread UART Bridge (C6 Coprocessor)"
+menu "OpenThread Bridge (C6 Coprocessor)"
 
     config OT_BRIDGE_ENABLE
-        bool "Enable OpenThread UART-to-USB CDC bridge"
+        bool "Enable OpenThread USB CDC bridge"
         default y
         help
             Enable a USB CDC ACM serial port that bridges to an ESP32-C6
-            coprocessor running OpenThread RCP firmware over UART.
+            coprocessor running OpenThread RCP firmware.
 
     if OT_BRIDGE_ENABLE
 
-        config OT_BRIDGE_UART_PORT_NUM
-            int "UART port number for C6 coprocessor"
-            default 1
-            range 0 2
+        choice OT_BRIDGE_TRANSPORT
+            prompt "Transport to C6 coprocessor"
+            default OT_BRIDGE_TRANSPORT_SDIO
             help
-                UART peripheral number on the ESP32-P4 connected to the C6.
+                Select how Spinel frames are carried between the P4 and C6.
 
-        config OT_BRIDGE_UART_BAUD_RATE
-            int "UART baud rate"
-            default 460800
-            help
-                Baud rate for communication with the C6 OpenThread RCP.
-                The C6 RCP firmware must use the same baud rate.
+            config OT_BRIDGE_TRANSPORT_SDIO
+                bool "SDIO via esp-hosted ETH_IF"
+                help
+                    Use the esp-hosted SDIO link with ETH_IF interface type
+                    to carry Spinel frames. Requires esp-hosted host driver.
 
-        config OT_BRIDGE_UART_TX_PIN
-            int "UART TX GPIO pin (P4 -> C6 RX)"
-            default 24
+            config OT_BRIDGE_TRANSPORT_UART
+                bool "Direct UART"
+                help
+                    Use a hardware UART connected to the C6 for Spinel frames.
+        endchoice
 
-        config OT_BRIDGE_UART_RX_PIN
-            int "UART RX GPIO pin (P4 <- C6 TX)"
-            default 25
+        if OT_BRIDGE_TRANSPORT_UART
 
-        config OT_BRIDGE_UART_RX_BUF_SIZE
-            int "UART RX ring buffer size (bytes)"
-            default 2048
+            config OT_BRIDGE_UART_PORT_NUM
+                int "UART port number for C6 coprocessor"
+                default 1
+                range 0 2
 
-        config OT_BRIDGE_UART_TX_BUF_SIZE
-            int "UART TX ring buffer size (bytes)"
-            default 2048
+            config OT_BRIDGE_UART_BAUD_RATE
+                int "UART baud rate"
+                default 460800
+
+            config OT_BRIDGE_UART_TX_PIN
+                int "UART TX GPIO pin (P4 -> C6 RX)"
+                default 24
+
+            config OT_BRIDGE_UART_RX_PIN
+                int "UART RX GPIO pin (P4 <- C6 TX)"
+                default 25
+
+            config OT_BRIDGE_UART_RX_BUF_SIZE
+                int "UART RX ring buffer size (bytes)"
+                default 2048
+
+            config OT_BRIDGE_UART_TX_BUF_SIZE
+                int "UART TX ring buffer size (bytes)"
+                default 2048
+
+        endif # OT_BRIDGE_TRANSPORT_UART
 
         config OT_BRIDGE_TASK_PRIORITY
             int "Bridge task priority"
@@ -49,4 +66,19 @@ menu "OpenThread UART Bridge (C6 Coprocessor)"
             default 4096
 
     endif # OT_BRIDGE_ENABLE
+
+    config OT_SLAVE_OTA_ON_BOOT
+        bool "Check / perform slave OTA on boot"
+        default y
+        depends on OT_BRIDGE_ENABLE
+        help
+            On startup, mount the LittleFS storage partition, compare the
+            embedded slave firmware against the running version, and OTA
+            the C6 if needed.
+
+    config OT_SLAVE_OTA_DELETE_AFTER_FLASH
+        bool "Delete firmware from LittleFS after successful OTA"
+        default n
+        depends on OT_SLAVE_OTA_ON_BOOT
+
 endmenu

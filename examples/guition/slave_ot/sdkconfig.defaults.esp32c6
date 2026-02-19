@@ -1,0 +1,49 @@
+# slave_ot: ESP32-C6 specific defaults
+# OpenThread RCP over SDIO ETH_IF
+
+# --- CPU ---
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+
+# --- OpenThread ---
+CONFIG_OPENTHREAD_ENABLED=y
+CONFIG_OPENTHREAD_RADIO=y
+CONFIG_OPENTHREAD_RADIO_NATIVE=y
+CONFIG_OPENTHREAD_RCP_UART=y
+# ^ We select UART RCP to get the NCP HDLC code compiled,
+#   but we use HOST_CONNECTION_MODE_NONE and --wrap otPlatUartSend
+#   to redirect Spinel I/O to SDIO ETH_IF instead.
+
+CONFIG_OPENTHREAD_DIAG=n
+CONFIG_OPENTHREAD_COMMISSIONER=n
+CONFIG_OPENTHREAD_JOINER=n
+CONFIG_OPENTHREAD_BORDER_ROUTER=n
+CONFIG_OPENTHREAD_CLI=n
+CONFIG_OPENTHREAD_SRP_CLIENT=n
+CONFIG_OPENTHREAD_DNS_CLIENT=n
+CONFIG_OPENTHREAD_TASK_SIZE=3072
+CONFIG_OPENTHREAD_CONSOLE_ENABLE=n
+CONFIG_OPENTHREAD_NCP_VENDOR_HOOK=y
+
+# OT logging — enable at INFO for debugging, can be set to NONE later
+CONFIG_OPENTHREAD_LOG_LEVEL_DYNAMIC=n
+CONFIG_OPENTHREAD_LOG_LEVEL_INFO=y
+
+# --- BLE: disabled ---
+CONFIG_BT_ENABLED=n
+
+# --- WiFi: keep enabled for esp-hosted SDIO transport compatibility ---
+# The esp-hosted slave needs esp_wifi component for internal APIs,
+# but we won't start WiFi or connect to any AP.
+
+# --- SDIO timing (match original slave config) ---
+CONFIG_ESP_SDIO_PSEND_PSAMPLE=y
+
+# --- Partition Table ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- Packet stats (useful for debugging) ---
+CONFIG_ESP_PKT_STATS=y
+
+# --- Mempool ---
+CONFIG_ESP_CACHE_MALLOC=n

@@ -19,6 +19,13 @@
 #if defined(CONFIG_OT_BRIDGE_ENABLE) && CONFIG_OT_BRIDGE_ENABLE
 #include "app_ot_bridge.h"
 #endif
+#if defined(CONFIG_OT_BRIDGE_TRANSPORT_SDIO)
+#include "esp_hosted.h"
+#endif
+#if defined(CONFIG_OT_SLAVE_OTA_ON_BOOT)
+#include "slave_ota_littlefs.h"
+#include "esp_hosted_ota.h"
+#endif
 
 static const char *TAG = "app_usb";
 
@@ -71,6 +78,37 @@ esp_err_t app_usb_init(void)
 #endif
 
 #if defined(CONFIG_OT_BRIDGE_ENABLE) && CONFIG_OT_BRIDGE_ENABLE
+
+#if defined(CONFIG_OT_BRIDGE_TRANSPORT_SDIO)
+    /* Initialise the esp-hosted SDIO link to the C6 slave */
+    ESP_LOGI(TAG, "Initialising esp-hosted (SDIO) …");
+    ESP_RETURN_ON_ERROR(esp_hosted_init(), TAG, "esp_hosted_init failed");
+    ESP_RETURN_ON_ERROR(esp_hosted_connect_to_slave(), TAG, "esp_hosted_connect_to_slave failed");
+    ESP_LOGI(TAG, "esp-hosted connected to slave");
+
+#if defined(CONFIG_OT_SLAVE_OTA_ON_BOOT)
+    /* Check if the slave needs an OTA update from embedded LittleFS image */
+    ESP_LOGI(TAG, "Checking slave firmware …");
+    int ota_ret = slave_ota_littlefs_perform(
+#if defined(CONFIG_OT_SLAVE_OTA_DELETE_AFTER_FLASH)
+        true
+#else
+        false
+#endif
+    );
+    if (ota_ret == ESP_HOSTED_SLAVE_OTA_COMPLETED) {
+        ESP_LOGI(TAG, "Slave OTA succeeded — activating and restarting …");
+        esp_hosted_slave_ota_activate();
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+    } else if (ota_ret == ESP_HOSTED_SLAVE_OTA_NOT_REQUIRED) {
+        ESP_LOGI(TAG, "Slave firmware is up to date");
+    } else {
+        ESP_LOGW(TAG, "Slave OTA check returned %d — continuing", ota_ret);
+    }
+#endif /* CONFIG_OT_SLAVE_OTA_ON_BOOT */
+#endif /* CONFIG_OT_BRIDGE_TRANSPORT_SDIO */
+
     ret = app_ot_bridge_init();
     ESP_RETURN_ON_FALSE(ret == ESP_OK, ESP_FAIL, TAG, "app_ot_bridge_init failed");
 #endif
