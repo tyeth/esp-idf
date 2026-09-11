@@ -67,7 +67,7 @@
 
 //#define USE_CLASS_B_NET 1
 #ifndef DHCPS_DEBUG
-#define DHCPS_DEBUG          0
+#define DHCPS_DEBUG          1 /* CP-WIFI-DEBUG */
 #endif
 #define DHCPS_LOG printf
 
