@@ -284,6 +284,25 @@ int esp_mbedtls_handshake(esp_tls_t *tls, const esp_tls_cfg_t *cfg)
     }
 #endif
     ret = mbedtls_ssl_handshake(&tls->ssl);
+#if defined(CONFIG_MBEDTLS_SSL_PROTO_TLS1_3)
+    /* As per RFC 8446, section 4.6.1 the server may send a NewSessionTicket
+     * at any time after its Finished message - including in the same flight
+     * that the final handshake step consumes. esp_mbedtls_read() already
+     * loops on MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET, but when the
+     * ticket arrives during mbedtls_ssl_handshake() the code surfaced here
+     * and a completed handshake was reported as a fatal failure. Re-entering
+     * the handshake consumes the ticket; it returns 0 immediately because
+     * the handshake itself has already completed. */
+    int ticket_iterations = 0;
+    while (ret == MBEDTLS_ERR_SSL_RECEIVED_NEW_SESSION_TICKET) {
+        if (++ticket_iterations > ESP_TLS_MBEDTLS_MAX_NEW_SESSION_TICKETS) {
+            ESP_LOGE(TAG, "Too many NewSessionTicket messages during the TLS 1.3 handshake");
+            break;
+        }
+        ESP_LOGD(TAG, "NewSessionTicket received during handshake - continuing");
+        ret = mbedtls_ssl_handshake(&tls->ssl);
+    }
+#endif
     if (ret == 0) {
 #if CONFIG_MBEDTLS_DYNAMIC_BUFFER
         if (tls->esp_tls_dyn_buf_strategy != 0) {
